@@ -14,6 +14,7 @@
 
 package com.google.api.generator.gapic.protoparser;
 
+import com.google.api.AnnotationsProto;
 import com.google.api.ClientLibrarySettings;
 import com.google.api.ClientProto;
 import com.google.api.DocumentationRule;
@@ -813,6 +814,9 @@ public class Parser {
     // Parse the serviceYaml for autopopulated methods and fields once and put into a map
     Map<String, List<String>> autoPopulatedMethodsWithFields =
         parseAutoPopulatedMethodsAndFields(serviceYamlProtoOpt);
+
+    Set<String> allowedResourceTokens = learnResourceTokens(serviceDescriptor);
+
     for (MethodDescriptor protoMethod : serviceDescriptor.getMethods()) {
       SelectiveGapicType methodSelectiveGapicType =
           getMethodSelectiveGapicType(protoMethod, serviceYamlProtoOpt, protoPackage);
@@ -865,6 +869,7 @@ public class Parser {
               : false;
       RoutingHeaderRule routingHeaderRule =
           RoutingRuleParser.parse(protoMethod, inputMessage, messageTypes);
+      Map.Entry<String, String> resourceNameInfo = heuristicResourceNameInfo(httpBindings, allowedResourceTokens);
       methods.add(
           methodBuilder
               .setName(protoMethod.getName())
@@ -889,6 +894,8 @@ public class Parser {
               .setPageSizeFieldName(parsePageSizeFieldName(protoMethod, messageTypes, transport))
               .setIsDeprecated(isDeprecated)
               .setOperationPollingMethod(operationPollingMethod)
+              .setResourceNameField(resourceNameInfo != null ? resourceNameInfo.getKey() : null)
+              .setResourceNamePattern(resourceNameInfo != null ? resourceNameInfo.getValue() : null)
               .build());
 
       // Any input type that has a resource reference will need a resource name helper class.
@@ -1301,5 +1308,135 @@ public class Parser {
   @VisibleForTesting
   static boolean hasMethodSettings(Optional<com.google.api.Service> serviceYamlProtoOpt) {
     return serviceYamlProtoOpt.isPresent() && serviceYamlProtoOpt.get().hasPublishing();
+  }
+
+  private static Set<String> learnResourceTokens(ServiceDescriptor serviceDescriptor) {
+    Set<String> tokens = new HashSet<>();
+    for (MethodDescriptor method : serviceDescriptor.getMethods()) {
+      if (!isStandardMethod(method.getName())) {
+        continue;
+      }
+      if (!method.getOptions().hasExtension(AnnotationsProto.http)) {
+        continue;
+      }
+      HttpRule httpRule = method.getOptions().getExtension(AnnotationsProto.http);
+      HttpBindings bindings = HttpRuleParser.parseHttpRule(httpRule);
+      if (bindings != null) {
+        parseTokensFromPattern(bindings.pattern(), tokens);
+      }
+    }
+    return tokens;
+  }
+
+  private static boolean isStandardMethod(String name) {
+    String lower = name.toLowerCase();
+    return lower.startsWith("get")
+        || lower.startsWith("list")
+        || lower.startsWith("create")
+        || lower.startsWith("update")
+        || lower.startsWith("delete");
+  }
+
+  private static void parseTokensFromPattern(String pattern, Set<String> tokens) {
+    if (Strings.isNullOrEmpty(pattern)) {
+      return;
+    }
+    List<String> segments = splitPattern(pattern);
+    for (String seg : segments) {
+      if (seg.startsWith("{") && seg.endsWith("}")) {
+        String content = seg.substring(1, seg.length() - 1);
+        int eqIndex = content.indexOf('=');
+        if (eqIndex != -1) {
+          String tmpl = content.substring(eqIndex + 1);
+          parseTokensFromPattern(tmpl, tokens);
+        }
+      } else if (!seg.equals("*") && !seg.equals("**")) {
+        tokens.add(seg);
+      }
+    }
+  }
+
+  private static Map.Entry<String, String> heuristicResourceNameInfo(HttpBindings bindings, Set<String> allowedTokens) {
+    if (bindings == null || Strings.isNullOrEmpty(bindings.pattern())) {
+      return null;
+    }
+    String pattern = bindings.pattern();
+    List<String> segments = splitPattern(pattern);
+    String targetVar = null;
+    StringBuilder validPattern = new StringBuilder();
+
+    for (String seg : segments) {
+      boolean segmentIsValid = false;
+      if (seg.startsWith("{") && seg.endsWith("}")) {
+        String content = seg.substring(1, seg.length() - 1);
+        String varName = content;
+        String tmpl = null;
+        int eqIndex = content.indexOf('=');
+        if (eqIndex != -1) {
+          varName = content.substring(0, eqIndex);
+          tmpl = content.substring(eqIndex + 1);
+        }
+
+        boolean isValid = false;
+        if (tmpl != null) {
+          // Recursively check the template parts
+          List<String> subSegs = splitPattern(tmpl);
+          for (String sub : subSegs) {
+            if (allowedTokens.contains(sub)) {
+              isValid = true;
+              break;
+            }
+          }
+        } else {
+          isValid = true;
+        }
+
+        if (isValid) {
+          targetVar = varName;
+          segmentIsValid = true;
+        }
+
+      } else if (!seg.equals("*") && !seg.equals("**")) {
+        if (allowedTokens.contains(seg)) {
+          segmentIsValid = true;
+        }
+      } else {
+        segmentIsValid = true;
+      }
+
+      if (!segmentIsValid) {
+        break;
+      }
+      if (validPattern.length() > 0) {
+        validPattern.append(SLASH);
+      }
+      validPattern.append(seg);
+    }
+    if (targetVar == null) {
+      return null;
+    }
+    return new java.util.AbstractMap.SimpleEntry<>(targetVar, validPattern.toString());
+  }
+
+  private static List<String> splitPattern(String pattern) {
+    List<String> result = new ArrayList<>();
+    StringBuilder current = new StringBuilder();
+    int braceDepth = 0;
+    for (char c : pattern.toCharArray()) {
+      if (c == '{') {
+        braceDepth++;
+      } else if (c == '}') {
+        braceDepth--;
+      }
+
+      if (c == '/' && braceDepth == 0) {
+        result.add(current.toString());
+        current.setLength(0);
+      } else {
+        current.append(c);
+      }
+    }
+    result.add(current.toString());
+    return result;
   }
 }

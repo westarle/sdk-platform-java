@@ -100,6 +100,12 @@ public abstract class Method {
     return routingHeaderRule() != null && !routingHeaderRule().routingHeaderParams().isEmpty();
   }
 
+  @Nullable
+  public abstract String resourceNameField();
+
+  @Nullable
+  public abstract String resourceNamePattern();
+
   public boolean shouldSetParamsExtractor() {
     return (hasHttpBindings() && routingHeaderRule() == null) || hasRoutingHeaderParams();
   }
@@ -190,6 +196,10 @@ public abstract class Method {
     public abstract Builder setAutoPopulatedFields(List<String> autoPopulatedFields);
 
     public abstract Builder setRoutingHeaderRule(RoutingHeaderRule routingHeaderRule);
+
+    public abstract Builder setResourceNameField(String resourceNameField);
+
+    public abstract Builder setResourceNamePattern(String resourceNamePattern);
 
     public abstract Method build();
   }
