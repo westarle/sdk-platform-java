@@ -15,14 +15,21 @@ import com.google.api.gax.rpc.StatusCode;
 import com.google.api.gax.rpc.StubSettings;
 import com.google.api.gax.rpc.TransportChannelProvider;
 import com.google.api.gax.rpc.UnaryCallSettings;
+import com.google.api.gax.tracing.ApiTracer;
+import com.google.api.gax.tracing.ApiTracerFactory;
+import com.google.api.gax.tracing.BaseApiTracer;
+import com.google.api.gax.tracing.BaseApiTracerFactory;
+import com.google.api.gax.tracing.SpanName;
 import com.google.api.version.test.EchoRequest;
 import com.google.api.version.test.EchoResponse;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
+import io.opentelemetry.api.trace.Span;
 import java.io.IOException;
 import java.util.List;
+import java.util.Objects;
 import javax.annotation.Generated;
 
 // AUTO-GENERATED DOCUMENTATION AND CLASS.
@@ -166,6 +173,10 @@ public class EchoWithVersionStubSettings extends StubSettings<EchoWithVersionStu
     echoWithVersionMethodSettings = settingsBuilder.echoWithVersionMethodSettings().build();
   }
 
+  private static String extractResourceName(Object request) {
+    return null;
+  }
+
   /** Builder for EchoWithVersionStubSettings. */
   public static class Builder extends StubSettings.Builder<EchoWithVersionStubSettings, Builder> {
     private final ImmutableList<UnaryCallSettings.Builder<?, ?>> unaryMethodSettingsBuilders;
@@ -219,6 +230,7 @@ public class EchoWithVersionStubSettings extends StubSettings<EchoWithVersionStu
 
       builder.setTransportChannelProvider(defaultTransportChannelProvider());
       builder.setCredentialsProvider(defaultCredentialsProviderBuilder().build());
+      builder.setTracerFactory(new ResourceNameTracerFactory(BaseApiTracerFactory.getInstance()));
       builder.setInternalHeaderProvider(defaultApiClientHeaderProviderBuilder().build());
       builder.setMtlsEndpoint(getDefaultMtlsEndpoint());
       builder.setSwitchToMtlsEndpointAllowed(true);
@@ -258,6 +270,36 @@ public class EchoWithVersionStubSettings extends StubSettings<EchoWithVersionStu
     @Override
     public EchoWithVersionStubSettings build() throws IOException {
       return new EchoWithVersionStubSettings(this);
+    }
+  }
+
+  private static class ResourceNameTracerFactory extends ApiTracerFactory {
+    private final ApiTracerFactory delegate;
+
+    private ResourceNameTracerFactory(ApiTracerFactory delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public ApiTracer newTracer(ApiTracer parent, SpanName spanName, Object operationType) {
+      return new ResourceNameTracer(delegate.newTracer(parent, spanName, operationType));
+    }
+  }
+
+  private static class ResourceNameTracer extends BaseApiTracer {
+    private final ApiTracer delegate;
+
+    private ResourceNameTracer(ApiTracer delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public void attemptStarted(Object request, int attemptNumber) {
+      delegate.attemptStarted(request, attemptNumber);
+      String resourceName = extractResourceName(request);
+      if (Objects.nonNull(resourceName)) {
+        Span.current().setAttribute("gcp.resource.name", resourceName);
+      }
     }
   }
 }

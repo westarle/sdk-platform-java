@@ -49,6 +49,11 @@ import com.google.api.gax.rpc.StubSettings;
 import com.google.api.gax.rpc.TransportChannelProvider;
 import com.google.api.gax.rpc.UnaryCallSettings;
 import com.google.api.gax.rpc.UnaryCallable;
+import com.google.api.gax.tracing.ApiTracer;
+import com.google.api.gax.tracing.ApiTracerFactory;
+import com.google.api.gax.tracing.BaseApiTracer;
+import com.google.api.gax.tracing.BaseApiTracerFactory;
+import com.google.api.gax.tracing.SpanName;
 import com.google.api.generator.engine.ast.AnnotationNode;
 import com.google.api.generator.engine.ast.AnonymousClassExpr;
 import com.google.api.generator.engine.ast.AssignmentExpr;
@@ -60,6 +65,7 @@ import com.google.api.generator.engine.ast.EmptyLineStatement;
 import com.google.api.generator.engine.ast.Expr;
 import com.google.api.generator.engine.ast.ExprStatement;
 import com.google.api.generator.engine.ast.IfStatement;
+import com.google.api.generator.engine.ast.InstanceofExpr;
 import com.google.api.generator.engine.ast.MethodDefinition;
 import com.google.api.generator.engine.ast.MethodInvocationExpr;
 import com.google.api.generator.engine.ast.NewObjectExpr;
@@ -215,7 +221,10 @@ public abstract class AbstractServiceStubSettingsClassComposer implements ClassC
                     internalSettingVarNames,
                     typeStore))
             .setNestedClasses(
-                Arrays.asList(createNestedBuilderClass(service, serviceConfig, typeStore)))
+                Arrays.asList(
+                    createNestedBuilderClass(service, serviceConfig, typeStore),
+                    createResourceNameTracerFactoryClass(service, typeStore),
+                    createResourceNameTracerClass(service, typeStore)))
             .build();
     return GapicClass.create(
             GapicClass.Kind.STUB, classDef, SampleComposerUtil.handleDuplicateSamples(samples))
@@ -1053,6 +1062,7 @@ public abstract class AbstractServiceStubSettingsClassComposer implements ClassC
             SettingsCommentComposer.NEW_BUILDER_METHOD_COMMENT));
     javaMethods.addAll(createBuilderHelperMethods(service, typeStore));
     javaMethods.add(createClassConstructor(service, methodSettingsMemberVarExprs, typeStore));
+    javaMethods.add(createExtractResourceNameMethod(service, typeStore));
     return javaMethods;
   }
 
@@ -1946,6 +1956,21 @@ public abstract class AbstractServiceStubSettingsClassComposer implements ClassC
     bodyExprs.add(
         MethodInvocationExpr.builder()
             .setExprReferenceExpr(builderVarExpr)
+            .setMethodName("setTracerFactory")
+            .setArguments(
+                NewObjectExpr.builder()
+                    .setType(typeStore.get("ResourceNameTracerFactory"))
+                    .setArguments(
+                        MethodInvocationExpr.builder()
+                            .setStaticReferenceType(FIXED_TYPESTORE.get("BaseApiTracerFactory"))
+                            .setMethodName("getInstance")
+                            .build())
+                    .build())
+            .build());
+
+    bodyExprs.add(
+        MethodInvocationExpr.builder()
+            .setExprReferenceExpr(builderVarExpr)
             .setMethodName("setInternalHeaderProvider")
             .setArguments(
                 MethodInvocationExpr.builder()
@@ -2077,7 +2102,7 @@ public abstract class AbstractServiceStubSettingsClassComposer implements ClassC
     return javaMethods;
   }
 
-  private static MethodDefinition createNestedClassBuildMethod(
+  private MethodDefinition createNestedClassBuildMethod(
       Service service, TypeStore typeStore) {
     TypeNode outerClassType = typeStore.get(ClassNames.getServiceStubSettingsClassName(service));
     TypeNode builderType = typeStore.get(NESTED_BUILDER_CLASS_NAME);
@@ -2096,6 +2121,333 @@ public abstract class AbstractServiceStubSettingsClassComposer implements ClassC
         .build();
   }
 
+  private MethodDefinition createExtractResourceNameMethod(Service service, TypeStore typeStore) {
+    String methodName = "extractResourceName";
+    VariableExpr requestVarExpr =
+        VariableExpr.withVariable(
+            Variable.builder().setType(TypeNode.OBJECT).setName("request").build());
+    List<Statement> bodyStatements = new ArrayList<>();
+
+    for (Method method : service.methods()) {
+      if (method.resourceNameField() == null) {
+        continue;
+      }
+      TypeNode requestType = method.inputType();
+
+      Expr instanceOfExpr =
+          InstanceofExpr.builder().setExpr(requestVarExpr).setCheckType(requestType).build();
+
+      List<Statement> ifBody = new ArrayList<>();
+      VariableExpr typedRequestVar =
+          VariableExpr.withVariable(
+              Variable.builder().setType(requestType).setName("typedRequest").build());
+
+      ifBody.add(
+          ExprStatement.withExpr(
+              AssignmentExpr.builder()
+                  .setVariableExpr(typedRequestVar.toBuilder().setIsDecl(true).build())
+                  .setValueExpr(
+                      CastExpr.builder().setType(requestType).setExpr(requestVarExpr).build())
+                  .build()));
+
+      String pattern = method.resourceNamePattern();
+      StringBuilder formatString = new StringBuilder();
+      List<Expr> args = new ArrayList<>();
+
+      int len = pattern.length();
+      StringBuilder segment = new StringBuilder();
+      boolean inBrace = false;
+      for (int i = 0; i < len; i++) {
+        char c = pattern.charAt(i);
+        if (c == '{') {
+          inBrace = true;
+          formatString.append(segment);
+          segment.setLength(0);
+        } else if (c == '}') {
+          inBrace = false;
+          String varContent = segment.toString();
+          segment.setLength(0);
+          int eqIndex = varContent.indexOf('=');
+          String varName = (eqIndex == -1) ? varContent : varContent.substring(0, eqIndex);
+
+          formatString.append("%s");
+
+          String[] parts = varName.split("\\.");
+          Expr getterExpr = typedRequestVar;
+          for (String part : parts) {
+            getterExpr =
+                MethodInvocationExpr.builder()
+                    .setExprReferenceExpr(getterExpr)
+                    .setMethodName("get" + JavaStyle.toUpperCamelCase(part))
+                    .build();
+          }
+          args.add(getterExpr);
+        } else {
+          segment.append(c);
+        }
+      }
+      formatString.append(segment);
+
+      Expr formatCall =
+          MethodInvocationExpr.builder()
+              .setStaticReferenceType(TypeNode.STRING)
+              .setMethodName("format")
+              .setArguments(
+                  ImmutableList.<Expr>builder()
+                      .add(
+                          ValueExpr.withValue(
+                              StringObjectValue.withValue(formatString.toString())))
+                      .addAll(args)
+                      .build())
+              .setReturnType(TypeNode.STRING)
+              .build();
+
+      ifBody.add(ExprStatement.withExpr(ReturnExpr.withExpr(formatCall)));
+
+      bodyStatements.add(
+          IfStatement.builder().setConditionExpr(instanceOfExpr).setBody(ifBody).build());
+    }
+
+    return MethodDefinition.builder()
+        .setScope(ScopeNode.PRIVATE)
+        .setIsStatic(true)
+        .setReturnType(TypeNode.STRING)
+        .setName(methodName)
+        .setArguments(requestVarExpr.toBuilder().setIsDecl(true).build())
+        .setBody(bodyStatements)
+        .setReturnExpr(ValueExpr.createNullExpr())
+        .build();
+  }
+
+  private ClassDefinition createResourceNameTracerClass(Service service, TypeStore typeStore) {
+    TypeNode apiTracerType = FIXED_TYPESTORE.get("ApiTracer");
+    TypeNode baseApiTracerType = FIXED_TYPESTORE.get("BaseApiTracer");
+    TypeNode spanType =
+        TypeNode.withReference(
+            VaporReference.builder()
+                .setName("Span")
+                .setPakkage("io.opentelemetry.api.trace")
+                .build());
+
+    String className = "ResourceNameTracer";
+    String stubSettingsClassName = ClassNames.getServiceStubSettingsClassName(service);
+
+    VariableExpr delegateVarExpr =
+        VariableExpr.withVariable(
+            Variable.builder().setType(apiTracerType).setName("delegate").build());
+
+    MethodDefinition constructor =
+        MethodDefinition.constructorBuilder()
+            .setScope(ScopeNode.PRIVATE)
+            .setReturnType(
+                TypeNode.withReference(
+                    VaporReference.builder()
+                        .setName(className)
+                        .setPakkage(service.pakkage() + ".stub")
+                        .build()))
+            .setArguments(delegateVarExpr.toBuilder().setIsDecl(true).build())
+            .setBody(
+                Arrays.asList(
+                    ExprStatement.withExpr(
+                        AssignmentExpr.builder()
+                            .setVariableExpr(
+                                VariableExpr.builder()
+                                    .setVariable(delegateVarExpr.variable())
+                                    .setExprReferenceExpr(
+                                        ValueExpr.withValue(
+                                            ThisObjectValue.withType(
+                                                typeStore.get(stubSettingsClassName))))
+                                    .build())
+                            .setValueExpr(delegateVarExpr)
+                            .build())))
+            .build();
+
+    VariableExpr requestVarExpr =
+        VariableExpr.withVariable(
+            Variable.builder().setType(TypeNode.OBJECT).setName("request").build());
+    VariableExpr attemptNumberVarExpr =
+        VariableExpr.withVariable(
+            Variable.builder().setType(TypeNode.INT).setName("attemptNumber").build());
+
+    List<Statement> attemptStartedBody = new ArrayList<>();
+    attemptStartedBody.add(
+        ExprStatement.withExpr(
+            MethodInvocationExpr.builder()
+                .setExprReferenceExpr(delegateVarExpr)
+                .setMethodName("attemptStarted")
+                .setArguments(requestVarExpr, attemptNumberVarExpr)
+                .build()));
+
+    Expr attemptCheck =
+        MethodInvocationExpr.builder()
+            .setExprReferenceExpr(ValueExpr.withValue(PrimitiveValue.builder().setType(TypeNode.INT).setValue("0").build()))
+            .setMethodName("equals")
+            .setArguments(attemptNumberVarExpr)
+            .setReturnType(TypeNode.BOOLEAN)
+            .build();
+    
+    VariableExpr resourceNameVar = VariableExpr.withVariable(
+        Variable.builder().setType(TypeNode.STRING).setName("resourceName").build());
+        
+    Expr extractCall = MethodInvocationExpr.builder()
+        .setMethodName("extractResourceName")
+        .setArguments(requestVarExpr)
+        .setReturnType(TypeNode.STRING)
+        .build();
+        
+    attemptStartedBody.add(ExprStatement.withExpr(
+        AssignmentExpr.builder()
+            .setVariableExpr(resourceNameVar.toBuilder().setIsDecl(true).build())
+            .setValueExpr(extractCall)
+            .build()));
+    
+    Expr nonNullCheck = MethodInvocationExpr.builder()
+        .setStaticReferenceType(TypeNode.withReference(ConcreteReference.withClazz(Objects.class)))
+        .setMethodName("nonNull")
+        .setArguments(resourceNameVar)
+        .setReturnType(TypeNode.BOOLEAN)
+        .build();
+        
+    List<Statement> ifBody = new ArrayList<>();
+    
+    Expr currentSpan = MethodInvocationExpr.builder()
+        .setStaticReferenceType(spanType)
+        .setMethodName("current")
+        .setReturnType(spanType)
+        .build();
+    
+    Expr setAttribute = MethodInvocationExpr.builder()
+        .setExprReferenceExpr(currentSpan)
+        .setMethodName("setAttribute")
+        .setArguments(
+            ValueExpr.withValue(StringObjectValue.withValue("gcp.resource.name")),
+            resourceNameVar)
+        .build();
+        
+    ifBody.add(ExprStatement.withExpr(setAttribute));
+    
+    attemptStartedBody.add(IfStatement.builder()
+        .setConditionExpr(nonNullCheck)
+        .setBody(ifBody)
+        .build());
+
+    MethodDefinition attemptStarted = MethodDefinition.builder()
+        .setIsOverride(true)
+        .setScope(ScopeNode.PUBLIC)
+        .setName("attemptStarted")
+        .setReturnType(TypeNode.VOID)
+        .setArguments(requestVarExpr.toBuilder().setIsDecl(true).build(), attemptNumberVarExpr.toBuilder().setIsDecl(true).build())
+        .setBody(attemptStartedBody)
+        .build();
+
+    return ClassDefinition.builder()
+        .setIsNested(true)
+        .setScope(ScopeNode.PRIVATE)
+        .setIsStatic(true)
+        .setName(className)
+        .setExtendsType(baseApiTracerType)
+        .setMethods(Arrays.asList(constructor, attemptStarted))
+        .setStatements(ImmutableList.<Statement>of(
+            ExprStatement.withExpr(
+                delegateVarExpr.toBuilder()
+                    .setIsDecl(true)
+                    .setScope(ScopeNode.PRIVATE)
+                    .setIsFinal(true)
+                    .build())))
+        .build();
+  }
+
+  private ClassDefinition createResourceNameTracerFactoryClass(Service service, TypeStore typeStore) {
+    TypeNode apiTracerFactoryType = FIXED_TYPESTORE.get("ApiTracerFactory");
+    TypeNode apiTracerType = FIXED_TYPESTORE.get("ApiTracer");
+    TypeNode spanNameType = FIXED_TYPESTORE.get("SpanName");
+    TypeNode operationType = FIXED_TYPESTORE.get("Operation"); 
+    
+    String className = "ResourceNameTracerFactory";
+    
+    VariableExpr delegateVarExpr =
+        VariableExpr.withVariable(
+            Variable.builder().setType(apiTracerFactoryType).setName("delegate").build());
+            
+    MethodDefinition constructor =
+        MethodDefinition.constructorBuilder()
+            .setScope(ScopeNode.PRIVATE)
+            .setReturnType(
+                TypeNode.withReference(
+                    VaporReference.builder()
+                        .setName(className)
+                        .setPakkage(service.pakkage() + ".stub")
+                        .build()))
+            .setArguments(delegateVarExpr.toBuilder().setIsDecl(true).build())
+            .setBody(
+                Arrays.asList(
+                    ExprStatement.withExpr(
+                        AssignmentExpr.builder()
+                            .setVariableExpr(
+                                VariableExpr.builder()
+                                    .setVariable(delegateVarExpr.variable())
+                                    .setExprReferenceExpr(
+                                        ValueExpr.withValue(
+                                            ThisObjectValue.withType(
+                                                typeStore.get(ClassNames.getServiceStubSettingsClassName(service)))))
+                                    .build())
+                            .setValueExpr(delegateVarExpr)
+                            .build())))
+            .build();
+            
+    VariableExpr parentVarExpr = VariableExpr.withVariable(Variable.builder().setType(apiTracerType).setName("parent").build());
+    VariableExpr spanNameVarExpr = VariableExpr.withVariable(Variable.builder().setType(spanNameType).setName("spanName").build());
+    VariableExpr operationTypeVarExpr = VariableExpr.withVariable(Variable.builder().setType(TypeNode.OBJECT).setName("operationType").build());
+
+    Expr delegateNewTracer = MethodInvocationExpr.builder()
+        .setExprReferenceExpr(delegateVarExpr)
+        .setMethodName("newTracer")
+        .setArguments(parentVarExpr, spanNameVarExpr, operationTypeVarExpr)
+        .setReturnType(apiTracerType)
+        .build();
+        
+    Expr newTracerExpr =
+        NewObjectExpr.builder()
+            .setType(
+                TypeNode.withReference(
+                    VaporReference.builder()
+                        .setName("ResourceNameTracer")
+                        .setPakkage(service.pakkage() + ".stub")
+                        .setSupertypeReference(
+                            FIXED_TYPESTORE.get("BaseApiTracer").reference())
+                        .build()))
+            .setArguments(delegateNewTracer)
+            .build();
+        
+    MethodDefinition newTracer = MethodDefinition.builder()
+        .setIsOverride(true)
+        .setScope(ScopeNode.PUBLIC)
+        .setName("newTracer")
+        .setReturnType(apiTracerType)
+        .setArguments(
+            parentVarExpr.toBuilder().setIsDecl(true).build(),
+            spanNameVarExpr.toBuilder().setIsDecl(true).build(),
+            operationTypeVarExpr.toBuilder().setIsDecl(true).build())
+        .setReturnExpr(newTracerExpr)
+        .build();
+
+    return ClassDefinition.builder()
+        .setIsNested(true)
+        .setScope(ScopeNode.PRIVATE)
+        .setIsStatic(true)
+        .setName(className)
+        .setExtendsType(apiTracerFactoryType)
+        .setMethods(Arrays.asList(constructor, newTracer))
+        .setStatements(ImmutableList.<Statement>of(
+            ExprStatement.withExpr(
+                delegateVarExpr.toBuilder()
+                    .setIsDecl(true)
+                    .setScope(ScopeNode.PRIVATE)
+                    .setIsFinal(true)
+                    .build())))
+        .build();
+  }
+
   private static TypeStore createStaticTypes() {
     List<Class<?>> concreteClazzes =
         Arrays.asList(
@@ -2103,6 +2455,10 @@ public abstract class AbstractServiceStubSettingsClassComposer implements ClassC
             ApiClientHeaderProvider.class,
             ApiFunction.class,
             ApiFuture.class,
+            ApiTracer.class,
+            ApiTracerFactory.class,
+            BaseApiTracer.class,
+            BaseApiTracerFactory.class,
             BatchedRequestIssuer.class,
             BatchingCallSettings.class,
             BatchingDescriptor.class,
@@ -2138,6 +2494,7 @@ public abstract class AbstractServiceStubSettingsClassComposer implements ClassC
             RequestBuilder.class,
             RetrySettings.class,
             ServerStreamingCallSettings.class,
+            SpanName.class,
             StatusCode.class,
             StreamingCallSettings.class,
             StubSettings.class,
@@ -2164,6 +2521,8 @@ public abstract class AbstractServiceStubSettingsClassComposer implements ClassC
 
     // Nested builder class.
     typeStore.put(pakkage, NESTED_BUILDER_CLASS_NAME, true, thisClassName);
+    typeStore.put(pakkage, "ResourceNameTracerFactory", true, thisClassName);
+    typeStore.put(pakkage, "ResourceNameTracer", true, thisClassName);
 
     // Pagination types.
     typeStore.putAll(

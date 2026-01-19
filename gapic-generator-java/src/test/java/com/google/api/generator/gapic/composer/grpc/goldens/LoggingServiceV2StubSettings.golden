@@ -36,6 +36,11 @@ import com.google.api.gax.rpc.StubSettings;
 import com.google.api.gax.rpc.TransportChannelProvider;
 import com.google.api.gax.rpc.UnaryCallSettings;
 import com.google.api.gax.rpc.UnaryCallable;
+import com.google.api.gax.tracing.ApiTracer;
+import com.google.api.gax.tracing.ApiTracerFactory;
+import com.google.api.gax.tracing.BaseApiTracer;
+import com.google.api.gax.tracing.BaseApiTracerFactory;
+import com.google.api.gax.tracing.SpanName;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -53,10 +58,12 @@ import com.google.logging.v2.TailLogEntriesResponse;
 import com.google.logging.v2.WriteLogEntriesRequest;
 import com.google.logging.v2.WriteLogEntriesResponse;
 import com.google.protobuf.Empty;
+import io.opentelemetry.api.trace.Span;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 import javax.annotation.Generated;
 
 // AUTO-GENERATED DOCUMENTATION AND CLASS.
@@ -508,6 +515,14 @@ public class LoggingServiceV2StubSettings extends StubSettings<LoggingServiceV2S
     tailLogEntriesSettings = settingsBuilder.tailLogEntriesSettings().build();
   }
 
+  private static String extractResourceName(Object request) {
+    if (request instanceof DeleteLogRequest) {
+      DeleteLogRequest typedRequest = ((DeleteLogRequest) request);
+      return String.format("v2/%s", typedRequest.getLogName());
+    }
+    return null;
+  }
+
   /** Builder for LoggingServiceV2StubSettings. */
   public static class Builder extends StubSettings.Builder<LoggingServiceV2StubSettings, Builder> {
     private final ImmutableList<UnaryCallSettings.Builder<?, ?>> unaryMethodSettingsBuilders;
@@ -632,6 +647,7 @@ public class LoggingServiceV2StubSettings extends StubSettings<LoggingServiceV2S
 
       builder.setTransportChannelProvider(defaultTransportChannelProvider());
       builder.setCredentialsProvider(defaultCredentialsProviderBuilder().build());
+      builder.setTracerFactory(new ResourceNameTracerFactory(BaseApiTracerFactory.getInstance()));
       builder.setInternalHeaderProvider(defaultApiClientHeaderProviderBuilder().build());
       builder.setMtlsEndpoint(getDefaultMtlsEndpoint());
       builder.setSwitchToMtlsEndpointAllowed(true);
@@ -741,6 +757,36 @@ public class LoggingServiceV2StubSettings extends StubSettings<LoggingServiceV2S
     @Override
     public LoggingServiceV2StubSettings build() throws IOException {
       return new LoggingServiceV2StubSettings(this);
+    }
+  }
+
+  private static class ResourceNameTracerFactory extends ApiTracerFactory {
+    private final ApiTracerFactory delegate;
+
+    private ResourceNameTracerFactory(ApiTracerFactory delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public ApiTracer newTracer(ApiTracer parent, SpanName spanName, Object operationType) {
+      return new ResourceNameTracer(delegate.newTracer(parent, spanName, operationType));
+    }
+  }
+
+  private static class ResourceNameTracer extends BaseApiTracer {
+    private final ApiTracer delegate;
+
+    private ResourceNameTracer(ApiTracer delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public void attemptStarted(Object request, int attemptNumber) {
+      delegate.attemptStarted(request, attemptNumber);
+      String resourceName = extractResourceName(request);
+      if (Objects.nonNull(resourceName)) {
+        Span.current().setAttribute("gcp.resource.name", resourceName);
+      }
     }
   }
 }

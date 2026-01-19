@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package google.testgapic.v1beta1;
+
+import "google/api/annotations.proto";
+
+option java_package = "com.google.testgapic.v1beta1";
+option java_outer_classname = "ExplodedProto";
+
+service Exploded {
+  rpc GetInstance(GetInstanceRequest) returns (Instance) {
+    option (google.api.http) = {
+      get: "/v1/projects/{project}/zones/{zone}/instances/{instance}"
+    };
+  }
+}
+
+message GetInstanceRequest {
+  string project = 1;
+  string zone = 2;
+  string instance = 3;
+}
+
+message Instance {}

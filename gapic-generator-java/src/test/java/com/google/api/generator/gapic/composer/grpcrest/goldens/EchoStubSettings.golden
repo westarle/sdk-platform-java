@@ -35,6 +35,11 @@ import com.google.api.gax.rpc.StubSettings;
 import com.google.api.gax.rpc.TransportChannelProvider;
 import com.google.api.gax.rpc.UnaryCallSettings;
 import com.google.api.gax.rpc.UnaryCallable;
+import com.google.api.gax.tracing.ApiTracer;
+import com.google.api.gax.tracing.ApiTracerFactory;
+import com.google.api.gax.tracing.BaseApiTracer;
+import com.google.api.gax.tracing.BaseApiTracerFactory;
+import com.google.api.gax.tracing.SpanName;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -53,9 +58,11 @@ import com.google.showcase.grpcrest.v1beta1.UpdateCaseRequest;
 import com.google.showcase.grpcrest.v1beta1.WaitMetadata;
 import com.google.showcase.grpcrest.v1beta1.WaitRequest;
 import com.google.showcase.grpcrest.v1beta1.WaitResponse;
+import io.opentelemetry.api.trace.Span;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.List;
+import java.util.Objects;
 import javax.annotation.Generated;
 
 // AUTO-GENERATED DOCUMENTATION AND CLASS.
@@ -438,6 +445,14 @@ public class EchoStubSettings extends StubSettings<EchoStubSettings> {
     updateCaseSettings = settingsBuilder.updateCaseSettings().build();
   }
 
+  private static String extractResourceName(java.lang.Object request) {
+    if (request instanceof UpdateCaseRequest) {
+      UpdateCaseRequest typedRequest = ((UpdateCaseRequest) request);
+      return String.format("v2beta/%s", typedRequest.getCase().getName());
+    }
+    return null;
+  }
+
   /** Builder for EchoStubSettings. */
   public static class Builder extends StubSettings.Builder<EchoStubSettings, Builder> {
     private final ImmutableList<UnaryCallSettings.Builder<?, ?>> unaryMethodSettingsBuilders;
@@ -546,6 +561,7 @@ public class EchoStubSettings extends StubSettings<EchoStubSettings> {
 
       builder.setTransportChannelProvider(defaultTransportChannelProvider());
       builder.setCredentialsProvider(defaultCredentialsProviderBuilder().build());
+      builder.setTracerFactory(new ResourceNameTracerFactory(BaseApiTracerFactory.getInstance()));
       builder.setInternalHeaderProvider(defaultApiClientHeaderProviderBuilder().build());
       builder.setMtlsEndpoint(getDefaultMtlsEndpoint());
       builder.setSwitchToMtlsEndpointAllowed(true);
@@ -558,6 +574,7 @@ public class EchoStubSettings extends StubSettings<EchoStubSettings> {
 
       builder.setTransportChannelProvider(defaultHttpJsonTransportProviderBuilder().build());
       builder.setCredentialsProvider(defaultCredentialsProviderBuilder().build());
+      builder.setTracerFactory(new ResourceNameTracerFactory(BaseApiTracerFactory.getInstance()));
       builder.setInternalHeaderProvider(defaultHttpJsonApiClientHeaderProviderBuilder().build());
       builder.setMtlsEndpoint(getDefaultMtlsEndpoint());
       builder.setSwitchToMtlsEndpointAllowed(true);
@@ -725,6 +742,37 @@ public class EchoStubSettings extends StubSettings<EchoStubSettings> {
     @Override
     public EchoStubSettings build() throws IOException {
       return new EchoStubSettings(this);
+    }
+  }
+
+  private static class ResourceNameTracerFactory extends ApiTracerFactory {
+    private final ApiTracerFactory delegate;
+
+    private ResourceNameTracerFactory(ApiTracerFactory delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public ApiTracer newTracer(
+        ApiTracer parent, SpanName spanName, java.lang.Object operationType) {
+      return new ResourceNameTracer(delegate.newTracer(parent, spanName, operationType));
+    }
+  }
+
+  private static class ResourceNameTracer extends BaseApiTracer {
+    private final ApiTracer delegate;
+
+    private ResourceNameTracer(ApiTracer delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public void attemptStarted(java.lang.Object request, int attemptNumber) {
+      delegate.attemptStarted(request, attemptNumber);
+      String resourceName = extractResourceName(request);
+      if (Objects.nonNull(resourceName)) {
+        Span.current().setAttribute("gcp.resource.name", resourceName);
+      }
     }
   }
 }
