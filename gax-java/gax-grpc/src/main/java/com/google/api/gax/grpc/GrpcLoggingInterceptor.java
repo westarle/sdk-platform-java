@@ -40,6 +40,9 @@ import static com.google.api.gax.logging.LoggingUtils.recordServiceRpcAndRequest
 import com.google.api.core.InternalApi;
 import com.google.api.gax.logging.LogData;
 import com.google.api.gax.logging.LoggerProvider;
+import com.google.api.gax.logging.LoggingUtils;
+import com.google.api.gax.rpc.ErrorDetails;
+import com.google.rpc.ErrorInfo;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -94,6 +97,55 @@ public class GrpcLoggingInterceptor implements ClientInterceptor {
 
               @Override
               public void onClose(Status status, Metadata trailers) {
+                executeWithTryCatch(
+                    () -> {
+                      if (!status.isOk()
+                          && LoggingUtils.isLoggingEnabled()
+                          && LOGGER_PROVIDER.getLogger().isInfoEnabled()) {
+                        Map<String, Object> logContext = new HashMap<>();
+                        logContext.put("rpc.system", "grpc");
+                        logContext.put("rpc.service", method.getServiceName());
+                        logContext.put("rpc.method", method.getFullMethodName());
+                        logContext.put("rpc.response.status_code", status.getCode().value());
+                        logContext.put("grpc.status", status.getCode().name());
+                        if (status.getDescription() != null) {
+                          logContext.put("status.message", status.getDescription());
+                        }
+
+                        if (trailers != null) {
+                          byte[] bytes =
+                              trailers.get(
+                                  Metadata.Key.of(
+                                      "grpc-status-details-bin", Metadata.BINARY_BYTE_MARSHALLER));
+                          if (bytes != null) {
+                            com.google.rpc.Status rpcStatus =
+                                com.google.rpc.Status.parseFrom(bytes);
+                            ErrorDetails errorDetails =
+                                ErrorDetails.builder()
+                                    .setRawErrorMessages(rpcStatus.getDetailsList())
+                                    .build();
+                            ErrorInfo errorInfo = errorDetails.getErrorInfo();
+
+                            if (errorInfo != null) {
+                              if (!errorInfo.getReason().isEmpty()) {
+                                logContext.put("error.type", errorInfo.getReason());
+                              }
+                              if (!errorInfo.getDomain().isEmpty()) {
+                                logContext.put("error.domain", errorInfo.getDomain());
+                              }
+                              for (Map.Entry<String, String> entry :
+                                  errorInfo.getMetadataMap().entrySet()) {
+                                logContext.put(
+                                    "error.metadata." + entry.getKey(), entry.getValue());
+                              }
+                            }
+                          }
+                        }
+                        LoggingUtils.logActionableError(
+                            logContext, LOGGER_PROVIDER, "Operation failed with actionable error");
+                      }
+                    });
+
                 logResponse(status.getCode().toString(), logDataBuilder, LOGGER_PROVIDER);
                 super.onClose(status, trailers);
               }
