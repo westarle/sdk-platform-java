@@ -36,10 +36,28 @@ import java.util.Map;
 @InternalApi
 public class LoggingUtils {
 
-  private static boolean loggingEnabled = isLoggingEnabled();
+  private static boolean loggingEnabled = checkLoggingEnabled();
   static final String GOOGLE_SDK_JAVA_LOGGING = "GOOGLE_SDK_JAVA_LOGGING";
 
-  static boolean isLoggingEnabled() {
+  /**
+   * Returns whether client-side logging is enabled.
+   *
+   * @return true if logging is enabled, false otherwise.
+   */
+  public static boolean isLoggingEnabled() {
+    return loggingEnabled;
+  }
+
+  /**
+   * Sets whether client-side logging is enabled. Visible for testing.
+   *
+   * @param enabled true to enable logging, false to disable.
+   */
+  public static void setLoggingEnabled(boolean enabled) {
+    loggingEnabled = enabled;
+  }
+
+  private static boolean checkLoggingEnabled() {
     String enableLogging = System.getenv(GOOGLE_SDK_JAVA_LOGGING);
     return "true".equalsIgnoreCase(enableLogging);
   }
@@ -123,6 +141,27 @@ public class LoggingUtils {
       RespT message, LogData.Builder logDataBuilder, LoggerProvider loggerProvider) {
     if (loggingEnabled) {
       Slf4jLoggingHelpers.logRequest(message, logDataBuilder, loggerProvider);
+    }
+  }
+
+  /**
+   * Logs an actionable error message with structured context.
+   *
+   * @param logContext A map containing the structured logging context (e.g., RPC service, method,
+   *     error details).
+   * @param loggerProvider The provider used to obtain the logger.
+   * @param message The human-readable error message.
+   */
+  public static void logActionableError(
+      Map<String, Object> logContext, LoggerProvider loggerProvider, String message) {
+    if (loggingEnabled) {
+      org.slf4j.Logger logger = loggerProvider.getLogger();
+      // Actionable errors are logged at the INFO level because transport errors
+      // might be retryable and self-healing. Logging at ERROR would trigger
+      // unintended production alerts for transient issues.
+      if (logger.isInfoEnabled()) {
+        Slf4jUtils.log(logger, org.slf4j.event.Level.INFO, logContext, message);
+      }
     }
   }
 
