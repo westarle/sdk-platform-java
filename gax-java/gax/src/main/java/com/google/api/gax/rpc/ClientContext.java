@@ -44,7 +44,6 @@ import com.google.api.gax.rpc.internal.QuotaProjectIdHidingCredentials;
 import com.google.api.gax.tracing.ApiTracerContext;
 import com.google.api.gax.tracing.ApiTracerFactory;
 import com.google.api.gax.tracing.BaseApiTracerFactory;
-import com.google.api.gax.tracing.SpanTracerFactory;
 import com.google.auth.ApiKeyCredentials;
 import com.google.auth.CredentialTypeForMetrics;
 import com.google.auth.Credentials;
@@ -278,8 +277,13 @@ public abstract class ClientContext {
             .setLibraryMetadata(settings.getLibraryMetadata())
             .build();
     ApiTracerFactory apiTracerFactory = settings.getTracerFactory();
-    if (apiTracerFactory instanceof SpanTracerFactory) {
-      apiTracerFactory = apiTracerFactory.withContext(apiTracerContext);
+    apiTracerFactory = apiTracerFactory.withContext(apiTracerContext);
+    if (!(apiTracerFactory instanceof com.google.api.gax.tracing.CompositeTracerFactory)) {
+      com.google.api.gax.tracing.ApiTracerFactory loggingTracerFactory =
+          new com.google.api.gax.tracing.LoggingTracerFactory().withContext(apiTracerContext);
+      apiTracerFactory =
+          new com.google.api.gax.tracing.CompositeTracerFactory(
+              apiTracerFactory, loggingTracerFactory);
     }
 
     return newBuilder()

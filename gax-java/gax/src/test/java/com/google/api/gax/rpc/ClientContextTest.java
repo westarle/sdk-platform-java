@@ -1304,7 +1304,8 @@ class ClientContextTest {
     Mockito.doReturn(apiTracerFactory).when(settings).getTracerFactory();
 
     ClientContext context = ClientContext.create(settings);
-    assertThat(context.getTracerFactory()).isSameInstanceAs(apiTracerFactory);
+    assertThat(context.getTracerFactory())
+        .isInstanceOf(com.google.api.gax.tracing.CompositeTracerFactory.class);
     verify(apiTracerFactory, times(1)).withContext(Mockito.any());
   }
 }
